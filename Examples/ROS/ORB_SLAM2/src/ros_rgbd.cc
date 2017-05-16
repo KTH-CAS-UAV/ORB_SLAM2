@@ -24,15 +24,18 @@
 #include<fstream>
 #include<chrono>
 
-#include<ros/ros.h>
+#include <ros/ros.h>
 #include <cv_bridge/cv_bridge.h>
 #include <message_filters/subscriber.h>
 #include <message_filters/time_synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
+#include <geometry_msgs/Point.h>
+#include <geometry_msgs/Quaternion.h>
+#include <geometry_msgs/PoseStamped.h>
 
 #include<opencv2/core/core.hpp>
 
-#include"../../../include/System.h"
+#include "../../../include/System.h"
 
 using namespace std;
 
@@ -40,6 +43,8 @@ class ImageGrabber
 {
 public:
     ImageGrabber(ORB_SLAM2::System* pSLAM):mpSLAM(pSLAM){}
+
+    ros::Publisher pubPose;
 
     void GrabRGBD(const sensor_msgs::ImageConstPtr& msgRGB,const sensor_msgs::ImageConstPtr& msgD);
 
@@ -59,14 +64,16 @@ int main(int argc, char **argv)
     }    
 
     // Create SLAM system. It initializes all system threads and gets ready to process frames.
-    ORB_SLAM2::System SLAM(argv[1],argv[2],ORB_SLAM2::System::RGBD,true);
+    ORB_SLAM2::System SLAM(argv[1],argv[2],ORB_SLAM2::System::RGBD,false);
 
     ImageGrabber igb(&SLAM);
 
     ros::NodeHandle nh;
 
-    message_filters::Subscriber<sensor_msgs::Image> rgb_sub(nh, "/camera/rgb/image_raw", 1);
-    message_filters::Subscriber<sensor_msgs::Image> depth_sub(nh, "camera/depth_registered/image_raw", 1);
+    message_filters::Subscriber<sensor_msgs::Image> rgb_sub(nh, "rgb_image", 1);
+    message_filters::Subscriber<sensor_msgs::Image> depth_sub(nh, "depth_image", 1);
+    igb.pubPose = nh.advertise<geometry_msgs::PoseStamped>("pose", 10);
+
     typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image> sync_pol;
     message_filters::Synchronizer<sync_pol> sync(sync_pol(10), rgb_sub,depth_sub);
     sync.registerCallback(boost::bind(&ImageGrabber::GrabRGBD,&igb,_1,_2));
@@ -109,7 +116,59 @@ void ImageGrabber::GrabRGBD(const sensor_msgs::ImageConstPtr& msgRGB,const senso
         return;
     }
 
-    mpSLAM->TrackRGBD(cv_ptrRGB->image,cv_ptrD->image,cv_ptrRGB->header.stamp.toSec());
+    // pose is a homogenous rigid body transformation that describes the
+    // current pose.
+    cv::Mat pose = mpSLAM->TrackRGBD(cv_ptrRGB->image,cv_ptrD->image,cv_ptrRGB->header.stamp.toSec());
+
+    if (pose.empty())
+    {
+        ROS_WARN_THROTTLE(1.0, "No pose estimate");
+        return;
+    }
+
+    // About coordinate systems: The translation in Z needs to be negated,
+    // otherwise the system is left-handed. Beyond that, we rotate the
+    // coordinates 90 degrees about the X axis, and 90 degrees about the Z
+    // axis. This results in a coordinate system where the camera's forward
+    // direction is X (as seen from above), and its height is Z.
+
+#define A(i,j) (pose.at<float>(i-1, j-1))
+#define Rxx (A(1,1))
+#define Rxy (A(1,2))
+#define Rxz (A(1,3))
+#define Ryx (A(2,1))
+#define Ryy (A(2,2))
+#define Ryz (A(2,3))
+#define Rzx (A(3,1))
+#define Rzy (A(3,2))
+#define Rzz (A(3,3))
+
+    geometry_msgs::Point positionMsg;
+    cv::Mat position(pose(cv::Rect(0, 0, 3, 3)).t() * pose(cv::Rect(3, 0, 1, 3)));
+#define T(i) (position.at<float>(i-1))
+#define Tx  (T(1))
+#define Ty  (T(2))
+#define Tz  (T(3))
+    positionMsg.x = -Tz;
+    positionMsg.y =  Tx;
+    positionMsg.z =  Ty;
+
+    // Determine orientation quaternion from rotation submatrix. The
+    // method here is taken from
+    // https://en.wikipedia.org/wiki/Rotation_formalisms_in_three_dimensions#Rotation_matrix_.E2.86.94_quaternion
+    geometry_msgs::Quaternion orientationMsg;
+    orientationMsg.w = sqrt(1.0 + Rxx + Ryy + Rzz)/2.0;
+    orientationMsg.x = -(Ryx - Rxy)/4/orientationMsg.w;
+    orientationMsg.y =  (Rzy - Ryz)/4/orientationMsg.w;
+    orientationMsg.z =  (Rxz - Rzx)/4/orientationMsg.w;
+#undef A
+
+    geometry_msgs::PoseStamped poseMsg;
+    poseMsg.header.frame_id = "slam_origin";
+    poseMsg.header.stamp = ros::Time::now();
+    poseMsg.pose.position = positionMsg;
+    poseMsg.pose.orientation = orientationMsg;
+    pubPose.publish(poseMsg);
 }
 
 
