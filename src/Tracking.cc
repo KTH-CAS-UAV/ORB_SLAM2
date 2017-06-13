@@ -426,7 +426,9 @@ void Tracking::Track()
                 cv::Mat LastTwc = cv::Mat::eye(4,4,CV_32F);
                 mLastFrame.GetRotationInverse().copyTo(LastTwc.rowRange(0,3).colRange(0,3));
                 mLastFrame.GetCameraCenter().copyTo(LastTwc.rowRange(0,3).col(3));
-                mVelocity = mCurrentFrame.mTcw*LastTwc;
+                double dt = mCurrentFrame.mTimeStamp - mLastFrame.mTimeStamp;
+                mVelocity = mCurrentFrame.mTcw*LastTwc/dt;
+                std::cerr << "Differentiated time interval: " << dt << "\n";
             }
             else
                 mVelocity = cv::Mat();
@@ -872,7 +874,9 @@ bool Tracking::TrackWithMotionModel()
     // Create "visual odometry" points if in Localization Mode
     UpdateLastFrame();
 
-    mCurrentFrame.SetPose(mVelocity*mLastFrame.mTcw);
+    double dt = mCurrentFrame.mTimeStamp - mLastFrame.mTimeStamp;
+    std::cerr << "Interpolated time interval: " << dt << "\n";
+    mCurrentFrame.SetPose(mVelocity*mLastFrame.mTcw*dt);
 
     fill(mCurrentFrame.mvpMapPoints.begin(),mCurrentFrame.mvpMapPoints.end(),static_cast<MapPoint*>(NULL));
 
