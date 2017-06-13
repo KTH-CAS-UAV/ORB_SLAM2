@@ -25,6 +25,8 @@
 #include<chrono>
 
 #include <ros/ros.h>
+#include <image_transport/image_transport.h>
+#include <image_transport/subscriber_filter.h>
 #include <cv_bridge/cv_bridge.h>
 #include <message_filters/subscriber.h>
 #include <message_filters/time_synchronizer.h>
@@ -63,15 +65,25 @@ int main(int argc, char **argv)
         return 1;
     }    
 
+    ros::NodeHandle nh("~");
+
+    image_transport::ImageTransport it(nh);
+    image_transport::TransportHints hintsRgb("raw", ros::TransportHints(), nh, "rgb_transport"),
+                                    hintsDepth("raw", ros::TransportHints(), nh, "depth_transport");
+    image_transport::SubscriberFilter rgb_sub(it, nh.resolveName("rgb_image"), 2, hintsRgb);
+    image_transport::SubscriberFilter depth_sub(it, nh.resolveName("depth_image"), 2, hintsDepth);
+
+    ROS_DEBUG("RGB transport:   %s, %d publishers on topic %s", rgb_sub.getTransport().c_str(),   rgb_sub.getNumPublishers(),   rgb_sub.getTopic().c_str());
+    ROS_DEBUG("Depth transport: %s, %d publishers on topic %s", depth_sub.getTransport().c_str(), depth_sub.getNumPublishers(), depth_sub.getTopic().c_str());
+
+    ROS_DEBUG("Vocabulary: %s", argv[1]);
+    ROS_DEBUG("Settings: %s", argv[2]);
+
     // Create SLAM system. It initializes all system threads and gets ready to process frames.
-    ORB_SLAM2::System SLAM(argv[1],argv[2],ORB_SLAM2::System::RGBD,false);
+    ORB_SLAM2::System SLAM(argv[1],argv[2],ORB_SLAM2::System::RGBD,true);
 
     ImageGrabber igb(&SLAM);
 
-    ros::NodeHandle nh;
-
-    message_filters::Subscriber<sensor_msgs::Image> rgb_sub(nh, "rgb_image", 1);
-    message_filters::Subscriber<sensor_msgs::Image> depth_sub(nh, "depth_image", 1);
     igb.pubPose = nh.advertise<geometry_msgs::PoseStamped>("pose", 10);
 
     typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image> sync_pol;
