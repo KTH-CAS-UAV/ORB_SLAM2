@@ -34,6 +34,7 @@
 #include <geometry_msgs/Point.h>
 #include <geometry_msgs/Quaternion.h>
 #include <geometry_msgs/PoseStamped.h>
+#include <std_msgs/Bool.h>
 
 #include<opencv2/core/core.hpp>
 
@@ -46,8 +47,9 @@ class ImageGrabber
 public:
     ImageGrabber(ORB_SLAM2::System* pSLAM):mpSLAM(pSLAM){}
 
-    ros::Publisher pubPose;
+    ros::Publisher pubPose, pubTrackingStatus;
 
+    bool PublishPose(const sensor_msgs::ImageConstPtr& msgRGB,const sensor_msgs::ImageConstPtr& msgD);
     void GrabRGBD(const sensor_msgs::ImageConstPtr& msgRGB,const sensor_msgs::ImageConstPtr& msgD);
 
     ORB_SLAM2::System* mpSLAM;
@@ -65,16 +67,16 @@ int main(int argc, char **argv)
         return 1;
     }    
 
-    ros::NodeHandle nh("~");
+    ros::NodeHandle nh;
 
     image_transport::ImageTransport it(nh);
     image_transport::TransportHints hintsRgb("raw", ros::TransportHints(), nh, "rgb_transport"),
                                     hintsDepth("raw", ros::TransportHints(), nh, "depth_transport");
-    image_transport::SubscriberFilter rgb_sub(it, nh.resolveName("rgb_image"), 2, hintsRgb);
-    image_transport::SubscriberFilter depth_sub(it, nh.resolveName("depth_image"), 2, hintsDepth);
+    image_transport::SubscriberFilter rgb_sub(it, "rgb_image", 2, hintsRgb);
+    image_transport::SubscriberFilter depth_sub(it, "depth_image", 2, hintsDepth);
 
-    ROS_DEBUG("RGB transport:   %s, %d publishers on topic %s", rgb_sub.getTransport().c_str(),   rgb_sub.getNumPublishers(),   rgb_sub.getTopic().c_str());
-    ROS_DEBUG("Depth transport: %s, %d publishers on topic %s", depth_sub.getTransport().c_str(), depth_sub.getNumPublishers(), depth_sub.getTopic().c_str());
+    ROS_DEBUG("RGB transport:   %s", rgb_sub.getTransport().c_str());
+    ROS_DEBUG("Depth transport: %s", depth_sub.getTransport().c_str());
 
     ROS_DEBUG("Vocabulary: %s", argv[1]);
     ROS_DEBUG("Settings: %s", argv[2]);
@@ -85,8 +87,11 @@ int main(int argc, char **argv)
     ImageGrabber igb(&SLAM);
 
     igb.pubPose = nh.advertise<geometry_msgs::PoseStamped>("pose", 10);
+    igb.pubTrackingStatus = nh.advertise<std_msgs::Bool>("tracking_status", 4);
 
-    typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image> sync_pol;
+    //typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image> sync_pol;
+    //message_filters::Synchronizer<sync_pol> sync(sync_pol(10), rgb_sub,depth_sub);
+    typedef message_filters::sync_policies::ExactTime<sensor_msgs::Image, sensor_msgs::Image> sync_pol;
     message_filters::Synchronizer<sync_pol> sync(sync_pol(10), rgb_sub,depth_sub);
     sync.registerCallback(boost::bind(&ImageGrabber::GrabRGBD,&igb,_1,_2));
 
@@ -103,7 +108,7 @@ int main(int argc, char **argv)
     return 0;
 }
 
-void ImageGrabber::GrabRGBD(const sensor_msgs::ImageConstPtr& msgRGB,const sensor_msgs::ImageConstPtr& msgD)
+bool ImageGrabber::PublishPose(const sensor_msgs::ImageConstPtr& msgRGB,const sensor_msgs::ImageConstPtr& msgD)
 {
     // Copy the ros image message to cv::Mat.
     cv_bridge::CvImageConstPtr cv_ptrRGB;
@@ -114,7 +119,7 @@ void ImageGrabber::GrabRGBD(const sensor_msgs::ImageConstPtr& msgRGB,const senso
     catch (cv_bridge::Exception& e)
     {
         ROS_ERROR("cv_bridge exception: %s", e.what());
-        return;
+        return false;
     }
 
     cv_bridge::CvImageConstPtr cv_ptrD;
@@ -125,7 +130,7 @@ void ImageGrabber::GrabRGBD(const sensor_msgs::ImageConstPtr& msgRGB,const senso
     catch (cv_bridge::Exception& e)
     {
         ROS_ERROR("cv_bridge exception: %s", e.what());
-        return;
+        return false;
     }
 
     // pose is a homogenous rigid body transformation that describes the
@@ -135,7 +140,7 @@ void ImageGrabber::GrabRGBD(const sensor_msgs::ImageConstPtr& msgRGB,const senso
     if (pose.empty())
     {
         ROS_WARN_THROTTLE(1.0, "No pose estimate");
-        return;
+        return false;
     }
 
     // About coordinate systems: The translation in Z needs to be negated,
@@ -181,6 +186,14 @@ void ImageGrabber::GrabRGBD(const sensor_msgs::ImageConstPtr& msgRGB,const senso
     poseMsg.pose.position = positionMsg;
     poseMsg.pose.orientation = orientationMsg;
     pubPose.publish(poseMsg);
+
+    return true;
 }
 
 
+void ImageGrabber::GrabRGBD(const sensor_msgs::ImageConstPtr& msgRGB,const sensor_msgs::ImageConstPtr& msgD)
+{
+    std_msgs::Bool trackingMsg;
+    trackingMsg.data = PublishPose(msgRGB, msgD);
+    pubTrackingStatus.publish(trackingMsg);
+}
